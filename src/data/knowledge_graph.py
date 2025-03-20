@@ -39,6 +39,22 @@ class KnowledgeGraph:
         self.triplets = []
         self.confidence_scores = {}
         
+        # Store compound-target pairs for model training
+        self.compound_target_pairs = []
+    
+    def add_compound_target_pair(self, compound_id: str, target_id: str) -> None:
+        """
+        Add compound-target pair information to the graph.
+        
+        Args:
+            compound_id: Compound identifier.
+            target_id: Target identifier.
+        """
+        if not hasattr(self, 'compound_target_pairs'):
+            self.compound_target_pairs = []
+        
+        self.compound_target_pairs.append((compound_id, target_id))
+        
     def add_entity(self, entity_id: str, entity_type: str) -> int:
         """
         Add entity to knowledge graph.
@@ -425,6 +441,12 @@ class KnowledgeGraph:
                     confidence=self.confidence_scores[triplet]
                 )
         
+        # Copy compound-target pairs that are within the subgraph
+        for compound_id, target_id in self.compound_target_pairs:
+            if (compound_id in subgraph.entity_to_idx.get("compound", {}) and 
+                target_id in subgraph.entity_to_idx.get("target", {})):
+                subgraph.add_compound_target_pair(compound_id, target_id)
+        
         return subgraph
     
     def calculate_centrality(self, centrality_method: str = "pagerank") -> Dict[Tuple[str, int], float]:
@@ -532,10 +554,17 @@ class KnowledgeGraph:
             "triplets": [
                 [list(h), r, list(t)] for h, r, t in self.triplets
             ],
-            "confidence_scores": {
-                str(k): v for k, v in self.confidence_scores.items()
-            }
+            "compound_target_pairs": getattr(self, 'compound_target_pairs', [])
         }
+        
+        # Convert confidence scores to a serializable format
+        confidence_scores_serialized = {}
+        for triplet, score in self.confidence_scores.items():
+            head, relation, tail = triplet
+            key = f"{head}|{relation}|{tail}"
+            confidence_scores_serialized[key] = score
+        
+        data["confidence_scores"] = confidence_scores_serialized
         
         with open(file_path, "w") as f:
             json.dump(data, f, indent=2)
@@ -562,37 +591,22 @@ class KnowledgeGraph:
         kg.idx_to_entity = {k: {int(k2): v2 for k2, v2 in v.items()} for k, v in data["idx_to_entity"].items()}
         kg.entity_counts = data["entity_counts"]
         
-        # Convert triplets and confidence scores
-        kg.triplets = [
-            ((h[0], h[1]), r, (t[0], t[1])) for h, r, t in data["triplets"]
-        ]
+        # Convert triplets
+        kg.triplets = []
+        for h, r, t in data["triplets"]:
+            head = (h[0], h[1])
+            relation = r
+            tail = (t[0], t[1])
+            kg.triplets.append((head, relation, tail))
         
-        kg.confidence_scores = {}
-        for k, v in data["confidence_scores"].items():
-            # Parse key from string representation
-            key_parts = k.strip("()").split("), ")
-    
-            # Make sure we have enough parts before accessing them
-            if len(key_parts) < 3:
-                print(f"Warning: Skipping malformed key: {k}")
-                continue  # Skip this item entirely
+        # Initialize confidence scores with default value of 1.0
+        kg.confidence_scores = {triplet: 1.0 for triplet in kg.triplets}
         
-            try:
-                head_part = key_parts[0] + ")"
-                relation = key_parts[1].strip("'")
-                tail_part = "(" + key_parts[2]
-        
-                head = eval(head_part)
-                tail = eval(tail_part)
-        
-                kg.confidence_scores[(head, relation, tail)] = v
-            except Exception as e:
-                print(f"Error processing key '{k}': {e}")
-                continue  # Skip problematic entries
-            head = eval(head_part)
-            tail = eval(tail_part)
-            
-            kg.confidence_scores[(head, relation, tail)] = v
+        # Load compound-target pairs if available
+        if "compound_target_pairs" in data:
+            kg.compound_target_pairs = data["compound_target_pairs"]
+        else:
+            kg.compound_target_pairs = []
         
         # Rebuild NetworkX graph
         kg.nx_graph = nx.MultiDiGraph()
@@ -606,16 +620,11 @@ class KnowledgeGraph:
         
         for triplet in kg.triplets:
             head, relation, tail = triplet
-            # Use get() with a default value to handle missing keys
-            confidence = kg.confidence_scores.get(triplet, 1.0)  # Default to 1.0 if missing
             kg.nx_graph.add_edge(
                 head,
                 tail,
                 relation=relation,
-                confidence=confidence
+                confidence=kg.confidence_scores[triplet]
             )
         
         return kg
-
-
-

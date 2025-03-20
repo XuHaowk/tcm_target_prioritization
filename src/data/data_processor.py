@@ -470,23 +470,17 @@ class DataProcessor:
     ) -> Tuple[GraphDataset, GraphDataset, GraphDataset]:
         """
         Split dataset into train, validation, and test sets.
-        
-        Args:
-            dataset: Graph dataset.
-            train_indices: Training indices.
-            val_indices: Validation indices.
-            test_indices: Test indices.
-            
-        Returns:
-            Tuple of (train_dataset, val_dataset, test_dataset).
         """
         def subset_dataset(dataset, indices):
-            pairs = [dataset.valid_pairs[i] for i in indices]
-            labels = [dataset.valid_labels[i] for i in indices]
+            # Use original pairs and labels, not filtered valid_pairs
+            pairs = [dataset.pairs[i] for i in indices if i < len(dataset.pairs)]
+            labels = [dataset.labels[i] for i in indices if i < len(dataset.labels)]
             return GraphDataset(dataset.kg, pairs, labels, dataset.node_features)
-        
+    
         train_dataset = subset_dataset(dataset, train_indices)
         val_dataset = subset_dataset(dataset, val_indices)
         test_dataset = subset_dataset(dataset, test_indices)
-        
+    
         return train_dataset, val_dataset, test_dataset
+
+

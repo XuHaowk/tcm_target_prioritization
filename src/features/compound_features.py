@@ -4,10 +4,10 @@ Compound feature extraction for TCM target prioritization system.
 import numpy as np
 from typing import Dict, List, Optional, Union, Tuple
 from rdkit import Chem
-from rdkit.Chem import AllChem  # Add this line
+from rdkit.Chem import rdMolDescriptors
 from rdkit.Chem import Descriptors
 
-
+from rdkit.Chem import Lipinski
 from rdkit.Chem import Descriptors
 # Access functions like Descriptors.NumHBD instead of Lipinski.NumHBD
 
@@ -32,10 +32,10 @@ class CompoundFeatureExtractor:
     def extract_morgan_fingerprint(self, smiles: str) -> np.ndarray:
         """
         Extract Morgan fingerprint from SMILES.
-        
+    
         Args:
             smiles: SMILES string.
-            
+        
         Returns:
             Morgan fingerprint.
         """
@@ -43,13 +43,18 @@ class CompoundFeatureExtractor:
             mol = Chem.MolFromSmiles(smiles)
             if mol is None:
                 return np.zeros(self.morgan_nbits, dtype=np.float32)
-            
-            fingerprint = AllChem.GetMorganFingerprintAsBitVect(
+        
+            # Replace this line:
+            # fingerprint = AllChem.GetMorganFingerprintAsBitVect(mol, radius=self.morgan_radius, nBits=self.morgan_nbits)
+        
+            # With this:
+            from rdkit.Chem import rdMolDescriptors
+            fingerprint = rdMolDescriptors.GetMorganFingerprintAsBitVect(
                 mol, 
                 radius=self.morgan_radius, 
                 nBits=self.morgan_nbits
             )
-            
+        
             return np.array(fingerprint, dtype=np.float32)
         except Exception as e:
             print(f"Error extracting Morgan fingerprint: {e}")
@@ -58,10 +63,10 @@ class CompoundFeatureExtractor:
     def extract_descriptors(self, smiles: str) -> np.ndarray:
         """
         Extract molecular descriptors from SMILES.
-        
+    
         Args:
             smiles: SMILES string.
-            
+        
         Returns:
             Molecular descriptors.
         """
@@ -69,7 +74,7 @@ class CompoundFeatureExtractor:
             mol = Chem.MolFromSmiles(smiles)
             if mol is None:
                 return np.zeros(12, dtype=np.float32)
-            
+        
             # Calculate descriptors
             descriptors = [
                 Descriptors.MolWt(mol),                      # Molecular weight
@@ -81,11 +86,11 @@ class CompoundFeatureExtractor:
                 Descriptors.NumAromaticRings(mol),           # Number of aromatic rings
                 Descriptors.NumHeteroatoms(mol),             # Number of heteroatoms
                 Descriptors.NumAliphaticRings(mol),          # Number of aliphatic rings
-                Lipinski.NumHBD(mol),                        # Number of H-bond donors (Lipinski)
-                Lipinski.NumHBA(mol),                        # Number of H-bond acceptors (Lipinski)
-                Chem.GetSSSR(mol).GetNumRings()             # Number of SSSR rings
+                Descriptors.NumHDonors(mol),                 # Number of H-bond donors (use instead of Lipinski.NumHBD)
+                Descriptors.NumHAcceptors(mol),              # Number of H-bond acceptors (use instead of Lipinski.NumHBA)
+                mol.GetRingInfo().NumRings()                 # Number of rings using RingInfo
             ]
-            
+        
             return np.array(descriptors, dtype=np.float32)
         except Exception as e:
             print(f"Error extracting descriptors: {e}")
@@ -256,3 +261,8 @@ class TCMCompoundFeatureExtractor(CompoundFeatureExtractor):
             features[compound_id] = self.extract_features(smiles, compound_id)
         
         return features
+
+
+
+
+

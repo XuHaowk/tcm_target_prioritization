@@ -95,17 +95,12 @@ class AttentionRGCN(nn.Module):
         edge_index_dict: Dict[Tuple[str, str, str], torch.Tensor],
         edge_attr_dict: Dict[Tuple[str, str, str], torch.Tensor]
     ) -> Dict[str, torch.Tensor]:
-        """
-        Forward pass.
-        
-        Args:
-            node_features: Dictionary mapping entity types to node features.
-            edge_index_dict: Dictionary mapping (src_type, rel_type, dst_type) to edge indices.
-            edge_attr_dict: Dictionary mapping (src_type, rel_type, dst_type) to edge attributes.
-            
-        Returns:
-            Dictionary mapping entity types to output node embeddings.
-        """
+        """Forward pass through the network."""
+        # Check if we have features at all
+        if not node_features:
+            print("Warning: No node features provided!")
+            return {}
+    
         # Project input features
         hidden_features = {}
         for entity_type, features in node_features.items():
@@ -118,56 +113,64 @@ class AttentionRGCN(nn.Module):
                     self.hidden_dim, 
                     device=features.device
                 )
-        
+    
         # Create relation type to index mapping
         rel_type_to_idx = {rel: idx for idx, rel in enumerate(self.relation_types)}
-        
+    
         # Process each layer
         for layer_idx in range(self.num_layers):
             # Prepare edge index and type for RGCN
             edge_indices = []
             edge_types = []
-            
+        
             for (src_type, rel_type, dst_type), edge_index in edge_index_dict.items():
-                # Skip edges involving entity types not in feature_dims
+                # Skip edges involving entity types not in hidden_features
                 if src_type not in hidden_features or dst_type not in hidden_features:
                     continue
-                
+            
                 # Get relation index
-                rel_idx = rel_type_to_idx[rel_type]
+                if rel_type not in rel_type_to_idx:
+                    continue
                 
+                rel_idx = rel_type_to_idx[rel_type]
+            
                 # Append to lists
                 edge_indices.append(edge_index)
                 edge_types.append(torch.full((edge_index.size(1),), rel_idx, dtype=torch.long))
-            
+        
             # Concatenate edge indices and types
             if edge_indices:
                 combined_edge_index = torch.cat(edge_indices, dim=1)
                 combined_edge_type = torch.cat(edge_types, dim=0)
             else:
                 # No edges, use dummy values
-                combined_edge_index = torch.zeros((2, 0), dtype=torch.long)
-                combined_edge_type = torch.zeros((0,), dtype=torch.long)
-            
+                device = next(iter(hidden_features.values())).device
+                combined_edge_index = torch.zeros((2, 0), dtype=torch.long, device=device)
+                combined_edge_type = torch.zeros((0,), dtype=torch.long, device=device)
+        
             # Combine node features
             node_feature_list = []
             node_type_indices = {}
             offset = 0
-            
+        
             for entity_type, features in hidden_features.items():
                 node_feature_list.append(features)
                 node_type_indices[entity_type] = (offset, offset + features.size(0))
                 offset += features.size(0)
-            
+        
+            # Check if we have features to process
+            if not node_feature_list:
+                return hidden_features  # Return what we have so far
+        
             combined_node_features = torch.cat(node_feature_list, dim=0)
-            
+        
             # Apply RGCN layer
             combined_output = self.rgcn_layers[layer_idx](
                 combined_node_features,
                 combined_edge_index,
                 combined_edge_type
             )
-            
+        
             # Apply attention if configured
             if self.use_attention:
                 combined_output = self.attention_layers[layer_idx](
@@ -175,22 +178,22 @@ class AttentionRGCN(nn.Module):
                     combined_edge_index,
                     combined_edge_type
                 )
-            
+        
             # Split output by entity type
             layer_output = {}
             for entity_type, (start, end) in node_type_indices.items():
                 layer_output[entity_type] = combined_output[start:end]
-            
+        
             # Apply residual connection if configured
             if self.residual and layer_idx > 0:
                 for entity_type in layer_output:
                     layer_output[entity_type] = layer_output[entity_type] + hidden_features[entity_type]
-            
+        
             # Apply layer normalization if configured
             if self.layer_norm:
                 for entity_type in layer_output:
                     layer_output[entity_type] = self.layer_norms[layer_idx](layer_output[entity_type])
-            
+        
             # Apply dropout
             for entity_type in layer_output:
                 layer_output[entity_type] = F.dropout(
@@ -198,15 +201,15 @@ class AttentionRGCN(nn.Module):
                     p=self.dropout,
                     training=self.training
                 )
-            
+        
             # Update hidden features
             hidden_features = layer_output
-        
+    
         # Apply output projection
         output = {}
         for entity_type, features in hidden_features.items():
             output[entity_type] = self.output_projection(features)
-        
+    
         return output
     
     def predict_link(
@@ -303,3 +306,4 @@ class AttentionRGCN(nn.Module):
         model.to(device)
         
         return model
+

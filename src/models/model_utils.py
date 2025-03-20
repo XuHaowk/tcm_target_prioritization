@@ -151,41 +151,41 @@ class ModelTrainer:
     ) -> Dict[str, float]:
         """
         Evaluate model.
-        
+    
         Args:
             dataset: Evaluation dataset.
             batch_size: Batch size.
             max_hops: Maximum number of hops for subgraphs.
-            
+        
         Returns:
             Dictionary of evaluation metrics.
         """
         # Set model to evaluation mode
         self.model.eval()
-        
+    
         # Get evaluation batches
         batches = dataset.to_train_batch(batch_size=batch_size, shuffle=False, max_hops=max_hops)
-        
+    
         # Initialize metrics
         total_loss = 0.0
         total_focal_loss = 0.0
         total_rank_loss = 0.0
         total_samples = 0
-        
+    
         # Initialize confusion matrix
         true_positives = 0
         false_positives = 0
         true_negatives = 0
         false_negatives = 0
-        
+    
         # Evaluate on batches
-        with torch.no_grad():
+        with torch.no_grad():  # Disable gradient computation
             for batch in tqdm(batches, desc="Evaluating", leave=False):
-                # Process batch
+                # Process batch (without updating model)
                 batch_loss, batch_metrics, batch_outputs, batch_targets = self._process_batch(
-                    batch, return_outputs=True
+                    batch, update_model=False, return_outputs=True
                 )
-                
+            
                 # Update metrics
                 batch_size = len(batch)
                 total_loss += batch_loss.item() * batch_size
@@ -193,25 +193,26 @@ class ModelTrainer:
                 if "rank_loss" in batch_metrics:
                     total_rank_loss += batch_metrics["rank_loss"].item() * batch_size
                 total_samples += batch_size
-                
+            
                 # Update confusion matrix
                 predictions = (batch_outputs > 0.5).float()
                 true_positives += ((predictions == 1) & (batch_targets == 1)).sum().item()
                 false_positives += ((predictions == 1) & (batch_targets == 0)).sum().item()
                 true_negatives += ((predictions == 0) & (batch_targets == 0)).sum().item()
                 false_negatives += ((predictions == 0) & (batch_targets == 1)).sum().item()
-        
+    
         # Calculate average metrics
-        avg_loss = total_loss / total_samples
-        avg_focal_loss = total_focal_loss / total_samples
+        avg_loss = total_loss / total_samples if total_samples > 0 else 0
+        avg_focal_loss = total_focal_loss / total_samples if total_samples > 0 else 0
         avg_rank_loss = total_rank_loss / total_samples if total_rank_loss > 0 else 0.0
-        
+    
         # Calculate classification metrics
-        accuracy = (true_positives + true_negatives) / (true_positives + false_positives + true_negatives + false_negatives)
+        total_predictions = true_positives + false_positives + true_negatives + false_negatives
+        accuracy = (true_positives + true_negatives) / total_predictions if total_predictions > 0 else 0
         precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0.0
         recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0.0
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-        
+    
         # Return metrics
         return {
             "loss": avg_loss,
@@ -234,77 +235,99 @@ class ModelTrainer:
     ]:
         """
         Process batch.
-        
+    
         Args:
             batch: Batch of (subgraph, node_features, label) tuples.
             update_model: Whether to update model parameters.
             return_outputs: Whether to return outputs.
-            
+        
         Returns:
             Tuple of (loss, loss_components, outputs, targets) if return_outputs=True,
             otherwise tuple of (loss, loss_components).
         """
-        # Reset optimizer
+        # Reset optimizer if we're updating the model
         if update_model:
             self.optimizer.zero_grad()
-        
+    
         # Extract batch data
         subgraphs = [item[0] for item in batch]
         node_features = [item[1] for item in batch]
         labels = [item[2] for item in batch]
-        
+    
         # Convert labels to tensor
         targets = torch.tensor(labels, dtype=torch.float32, device=self.device)
-        
+    
         # Initialize outputs
         outputs = torch.zeros(len(batch), device=self.device)
-        
+    
         # Process each sample in batch
         for i, (subgraph, features) in enumerate(zip(subgraphs, node_features)):
             # Move features to device
             features_device = {k: v.to(self.device) for k, v in features.items()}
-            
+        
             # Convert subgraph to PyTorch Geometric format
             pyg_data = subgraph.to_torch_geometric(features_device)
-            
+        
             # Extract edge indices and attributes
             edge_index_dict = {}
             edge_attr_dict = {}
-            
+        
             for edge_type, edge_info in pyg_data.edge_items():
                 edge_index_dict[edge_type] = edge_info.edge_index.to(self.device)
                 edge_attr_dict[edge_type] = edge_info.edge_attr.to(self.device)
-            
+        
             # Forward pass
             node_embeddings = self.model(features_device, edge_index_dict, edge_attr_dict)
-            
-            # Find compound and target nodes in the subgraph
-            compound_pair = batch[i][0].valid_pairs[0]
-            compound_id, target_id = compound_pair
-            
-            # Convert to indices
-            compound_idx = subgraph.entity_to_idx["compound"][compound_id]
-            target_idx = subgraph.entity_to_idx["target"][target_id]
-            
-            # Get embeddings
-            compound_embed = node_embeddings["compound"][compound_idx].unsqueeze(0)
-            target_embed = node_embeddings["target"][target_idx].unsqueeze(0)
-            
-            # Calculate similarity score
-            score = self.model.predict_link(compound_embed, target_embed).squeeze()
-            outputs[i] = score
         
+            # Find compound and target nodes in the subgraph
+            if hasattr(subgraph, 'compound_target_pairs') and subgraph.compound_target_pairs:
+                # Use the stored compound-target pairs
+                compound_id, target_id = subgraph.compound_target_pairs[0]
+            
+                # Convert to indices
+                compound_idx = subgraph.entity_to_idx["compound"][compound_id]
+                target_idx = subgraph.entity_to_idx["target"][target_id]
+            
+                # Get embeddings
+                compound_embed = node_embeddings["compound"][compound_idx].unsqueeze(0)
+                target_embed = node_embeddings["target"][target_idx].unsqueeze(0)
+            
+                # Calculate similarity score
+                score = self.model.predict_link(compound_embed, target_embed).squeeze()
+                outputs[i] = score
+            else:
+                # Fallback to using the first compound and target
+                compound_ids = list(subgraph.entity_to_idx["compound"].keys())
+                target_ids = list(subgraph.entity_to_idx["target"].keys())
+            
+                if compound_ids and target_ids:
+                    # Use the first compound and target
+                    compound_id = compound_ids[0]
+                    target_id = target_ids[0]
+                
+                    # Convert to indices
+                    compound_idx = subgraph.entity_to_idx["compound"][compound_id]
+                    target_idx = subgraph.entity_to_idx["target"][target_id]
+                
+                    # Get embeddings
+                    compound_embed = node_embeddings["compound"][compound_idx].unsqueeze(0)
+                    target_embed = node_embeddings["target"][target_idx].unsqueeze(0)
+                
+                    # Calculate similarity score
+                    score = self.model.predict_link(compound_embed, target_embed).squeeze()
+                    outputs[i] = score
+    
         # Calculate loss
         pos_mask = targets == 1
         neg_mask = targets == 0
-        
+    
         loss, loss_components = self.loss_fn(outputs, targets, pos_mask, neg_mask)
-        
+    
         # Update model if required
         if update_model:
             loss.backward()
             self.optimizer.step()
-        
+    
         # Return results
         if return_outputs:
             return loss, loss_components, outputs, targets
@@ -491,3 +514,6 @@ class ModelTrainer:
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+
+

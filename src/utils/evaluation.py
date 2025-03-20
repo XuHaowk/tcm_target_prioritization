@@ -22,101 +22,131 @@ class Evaluator:
         kg: KnowledgeGraph,
         model: AttentionRGCN,
         ranker: TargetRanker,
-        device: str = "cpu"
+        device: str = "cpu",
+        node_features: Optional[Dict[str, torch.Tensor]] = None  # Add this parameter
     ):
-        """
-        Initialize evaluator.
-        
-        Args:
-            kg: Knowledge graph.
-            model: AttentionRGCN model.
-            ranker: Target ranker.
-            device: Device to run on.
-        """
+        """Initialize evaluator."""
         self.kg = kg
         self.model = model
         self.ranker = ranker
         self.device = device
-        
+        self.node_features = node_features  # Store node features
+    
         # Move model to device
         self.model.to(self.device)
-        
+    
         # Set model to evaluation mode
         self.model.eval()
     
     def evaluate_model(
         self,
         test_data: List[Tuple[str, str, float]],
-        threshold: float = 0.5
+        threshold: float = 0.5,
+        node_features: Optional[Dict[str, torch.Tensor]] = None  # Add this parameter
     ) -> Dict[str, float]:
-        """
-        Evaluate model on test data.
-        
-        Args:
-            test_data: List of (compound_id, target_id, label) tuples.
-            threshold: Classification threshold.
-            
-        Returns:
-            Dictionary of evaluation metrics.
-        """
+        """Evaluate model on test data."""
+        # Use provided node features or the ones stored in the class
+        if node_features is None:
+            node_features = self.node_features
+    
         # Convert knowledge graph to PyTorch Geometric format
         pyg_data = self.kg.to_torch_geometric()
-        
+    
         # Extract node features and move to device
-        node_features = {}
-        for entity_type in self.kg.entity_types:
-            if entity_type in pyg_data:
-                node_features[entity_type] = pyg_data[entity_type].x.to(self.device)
-        
+        if node_features is None:
+            node_features = {}
+            for entity_type in self.kg.entity_types:
+                if entity_type in pyg_data and hasattr(pyg_data[entity_type], 'x'):
+                    node_features[entity_type] = pyg_data[entity_type].x.to(self.device)
+        else:
+            node_features = {k: v.to(self.device) for k, v in node_features.items()}
+    
+        # Check if we have compound and target features
+        if "compound" not in node_features or "target" not in node_features:
+            print("Warning: Missing compound or target features")
+            # Return default metrics if we can't evaluate
+            return {
+                "accuracy": 0.0, "precision": 0.0, "recall": 0.0, 
+                "f1": 0.0, "roc_auc": 0.0, "avg_precision": 0.0
+            }
+    
+    
         # Extract edge indices and attributes
         edge_index_dict = {}
         edge_attr_dict = {}
-        
+    
         for edge_type, edge_info in pyg_data.edge_items():
             edge_index_dict[edge_type] = edge_info.edge_index.to(self.device)
             edge_attr_dict[edge_type] = edge_info.edge_attr.to(self.device)
-        
+    
         # Compute node embeddings
         with torch.no_grad():
             node_embeddings = self.model(node_features, edge_index_dict, edge_attr_dict)
-        
+    
+        # Check if we have compound and target embeddings
+        if "compound" not in node_embeddings or "target" not in node_embeddings:
+            print("Warning: Model did not return compound or target embeddings")
+            # Return default metrics if we can't evaluate
+            return {
+                "accuracy": 0.0, "precision": 0.0, "recall": 0.0, 
+                "f1": 0.0, "roc_auc": 0.0, "avg_precision": 0.0
+            }
+    
         # Initialize metrics
         y_true = []
         y_pred = []
         y_score = []
-        
+    
         # Make predictions for each compound-target pair
         for compound_id, target_id, label in test_data:
             if (compound_id in self.kg.entity_to_idx["compound"] and
                 target_id in self.kg.entity_to_idx["target"]):
                 # Calculate similarity score
-                similarity = self.ranker.predict_score(compound_id, target_id, node_embeddings)
+                if self.ranker is not None:
+                    similarity = self.ranker.predict_score(compound_id, target_id, node_embeddings)
+                else:
+                    # Direct calculation if ranker is not available
+                    compound_idx = self.kg.entity_to_idx["compound"][compound_id]
+                    target_idx = self.kg.entity_to_idx["target"][target_id]
                 
+                    compound_embed = node_embeddings["compound"][compound_idx].unsqueeze(0)
+                    target_embed = node_embeddings["target"][target_idx].unsqueeze(0)
+                
+                    similarity = self.model.predict_link(compound_embed, target_embed).squeeze().item()
+            
                 # Convert to binary prediction
                 prediction = 1 if similarity >= threshold else 0
-                
+            
                 y_true.append(label)
                 y_pred.append(prediction)
                 y_score.append(similarity)
-        
+    
+        # If no valid predictions were made, return default metrics
+        if not y_true:
+            print("Warning: No valid predictions could be made")
+            return {
+                "accuracy": 0.0, "precision": 0.0, "recall": 0.0, 
+                "f1": 0.0, "roc_auc": 0.0, "avg_precision": 0.0
+            }
+    
         # Calculate metrics
         metrics = {}
-        
+    
         # Classification metrics
         metrics["accuracy"] = accuracy_score(y_true, y_pred)
         metrics["precision"] = precision_score(y_true, y_pred, zero_division=0)
         metrics["recall"] = recall_score(y_true, y_pred, zero_division=0)
         metrics["f1"] = f1_score(y_true, y_pred, zero_division=0)
-        
+    
         # ROC AUC
         if len(set(y_true)) >= 2:
             metrics["roc_auc"] = roc_auc_score(y_true, y_score)
         else:
             metrics["roc_auc"] = 0.0
-        
+    
         # Average precision
         metrics["avg_precision"] = average_precision_score(y_true, y_score)
-        
+    
         return metrics
     
     def evaluate_ranking(
@@ -462,3 +492,4 @@ class Evaluator:
                 plt.show()
         
         return importance
+

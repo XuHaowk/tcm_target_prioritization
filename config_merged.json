@@ -1,0 +1,86 @@
+{
+  "data": {
+    "raw_data_dir": "data/raw",
+    "processed_data_dir": "data/processed",
+    "entity_types": [
+      "tcm",
+      "compound",
+      "target",
+      "disease"
+    ],
+    "relation_types": [
+      "contains",
+      "binds",
+      "inhibits",
+      "activates",
+      "associated_with",
+      "linked_with",
+      "causal",
+      "therapeutic"
+    ],
+    "drug_target_sources": [
+      "BindingDB"
+    ],
+    "disease_target_sources": [
+      "OMIM"
+    ],
+    "raw_data_files": {
+      "compound_structures": "merged_compound_structures.csv",
+      "target_sequences": "merged_target_sequences.csv",
+      "tcm_compounds": "merged_tcm_compounds.csv",
+      "drug_target": "merged_drug_target.csv",
+      "disease_target": "merged_disease_target.csv",
+      "disease_ontology": "merged_disease_ontology.json",
+      "tcm_metadata": "merged_tcm_metadata.json",
+      "training_data": "merged_training_data.csv",
+      "validation_data": "merged_validation_data.csv",
+      "test_data": "merged_test_data.csv"
+    }
+  },
+  "features": {
+    "compound_feature_dim": 1024,
+    "target_feature_dim": 1024,
+    "disease_feature_dim": 512,
+    "unified_feature_dim": 256,
+    "use_morgan_fingerprint": true,
+    "morgan_radius": 2,
+    "morgan_nbits": 1024,
+    "use_sequence_encoding": true,
+    "use_blosum": true,
+    "use_ontology": true,
+    "normalize_features": true
+  },
+  "model": {
+    "num_layers": 3,
+    "hidden_dim": 256,
+    "dropout": 0.3,
+    "residual": true,
+    "layer_norm": true,
+    "use_attention": true,
+    "num_heads": 4,
+    "attention_dropout": 0.1,
+    "learning_rate": 0.001,
+    "weight_decay": 1e-05,
+    "batch_size": 32,
+    "num_epochs": 100,
+    "early_stopping_patience": 10,
+    "optimizer": "adam",
+    "loss_fn": "combined",
+    "focal_loss_gamma": 2.0,
+    "focal_loss_alpha": 0.25
+  },
+  "ranking": {
+    "similarity_weight": 0.4,
+    "disease_weight": 0.3,
+    "centrality_weight": 0.3,
+    "optimize_weights": true,
+    "weight_grid_search_step": 0.1,
+    "weight_cv_folds": 5,
+    "centrality_method": "pagerank",
+    "confidence_threshold": 0.5
+  },
+  "random_seed": 42,
+  "device": "cuda",
+  "log_dir": "logs",
+  "checkpoint_dir": "checkpoints"
+}

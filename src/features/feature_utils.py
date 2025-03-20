@@ -274,8 +274,13 @@ class FeatureBuilder:
         
         return node_features
     
-    def _resize_features(self, feature_matrix, target_dim):
+    def _resize_features(self, features, target_dim):
         """Resize feature matrix to target dimension."""
+        # Convert dictionary to matrix
+        entity_ids = list(features.keys())
+        feature_matrix = np.stack([features[eid] for eid in entity_ids])
+    
+        # Get current dimensions
         n_samples, n_features = feature_matrix.shape
     
         # If we have fewer samples than target_dim, we can't use PCA to increase dimensions
@@ -283,20 +288,28 @@ class FeatureBuilder:
             print(f"Warning: Cannot use PCA to increase dimensions. Requested {target_dim} but limited to {min(n_samples, n_features)}.")
         
             # Option 1: Use original features with padding
-            if n_features <= min(n_samples, n_features):
-                padded_features = np.zeros((n_samples, min(n_samples, n_features)))
-                padded_features[:, :n_features] = feature_matrix
-                return padded_features
-            
+            if n_features < target_dim:
+                padded_matrix = np.zeros((n_samples, target_dim))
+                padded_matrix[:, :n_features] = feature_matrix
+                feature_matrix = padded_matrix
+        
             # Option 2: Use PCA to reduce to maximum possible dimensions
-            target_dim = min(n_samples, n_features)
+            elif n_features > target_dim:
+                target_dim = min(n_samples, n_features)
+                pca = PCA(n_components=target_dim)
+                feature_matrix = pca.fit_transform(feature_matrix)
     
         # Standard PCA for dimensionality reduction
-        if n_features > target_dim:
+        elif n_features > target_dim:
             pca = PCA(n_components=target_dim)
             feature_matrix = pca.fit_transform(feature_matrix)
     
-        return feature_matrix
+        # Convert back to dictionary
+        result = {}
+        for i, entity_id in enumerate(entity_ids):
+            result[entity_id] = feature_matrix[i]
+    
+        return result
     
     def save(self, file_path: str) -> None:
         """
@@ -325,4 +338,5 @@ class FeatureBuilder:
         
         with open(file_path, "rb") as f:
             return pickle.load(f)
+
 

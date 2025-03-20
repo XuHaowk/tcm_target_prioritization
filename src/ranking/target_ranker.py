@@ -21,33 +21,27 @@ class TargetRanker:
         kg: KnowledgeGraph,
         model: AttentionRGCN,
         config: RankingConfig,
-        device: str = "cpu"
+        device: str = "cpu",
+        node_features: Optional[Dict[str, torch.Tensor]] = None  # Add this parameter
     ):
-        """
-        Initialize target ranker.
-        
-        Args:
-            kg: Knowledge graph.
-            model: AttentionRGCN model.
-            config: Ranking configuration.
-            device: Device to run on.
-        """
+        """Initialize target ranker."""
         self.kg = kg
         self.model = model
         self.config = config
         self.device = device
-        
+        self.node_features = node_features  # Store node features
+    
         # Move model to device
         self.model.to(self.device)
-        
+    
         # Set model to evaluation mode
         self.model.eval()
-        
+    
         # Ranking weights
         self.similarity_weight = config.similarity_weight
         self.disease_weight = config.disease_weight
         self.centrality_weight = config.centrality_weight
-        
+    
         # Pre-compute node centrality
         self.node_centrality = self.kg.calculate_centrality(
             centrality_method=config.centrality_method
@@ -175,58 +169,6 @@ class TargetRanker:
         
         return centrality_score
     
-    def rank_targets(
-        self,
-        compound_id: str,
-        disease_id: Optional[str] = None,
-        node_embeddings: Optional[Dict[str, torch.Tensor]] = None,
-        top_k: Optional[int] = None,
-        confidence_threshold: Optional[float] = None
-    ) -> pd.DataFrame:
-        """
-        Rank targets for compound.
-        
-        Args:
-            compound_id: Compound identifier.
-            disease_id: Disease identifier. If None, disease priority is averaged.
-            node_embeddings: Node embeddings. If None, computed from model.
-            top_k: Number of top targets to return. If None, return all.
-            confidence_threshold: Confidence threshold. If None, use config value.
-            
-        Returns:
-            DataFrame with ranked targets.
-        """
-        # Check if compound exists
-        if compound_id not in self.kg.entity_to_idx["compound"]:
-            raise ValueError(f"Compound not found: {compound_id}")
-        
-        # Use config values if not provided
-        if confidence_threshold is None:
-            confidence_threshold = self.config.confidence_threshold
-        
-        # Compute node embeddings if not provided
-        if node_embeddings is None:
-            # Convert knowledge graph to PyTorch Geometric format
-            pyg_data = self.kg.to_torch_geometric()
-            
-            # Extract node features and move to device
-            node_features = {}
-            for entity_type in self.kg.entity_types:
-                if entity_type in pyg_data:
-                    node_features[entity_type] = pyg_data[entity_type].x.to(self.device)
-            
-            # Extract edge indices and attributes
-            edge_index_dict = {}
-            edge_attr_dict = {}
-            
-            for edge_type, edge_info in pyg_data.edge_items():
-                edge_index_dict[edge_type] = edge_info.edge_index.to(self.device)
-                edge_attr_dict[edge_type] = edge_info.edge_attr.to(self.device)
-            
-            # Compute node embeddings
-            with torch.no_grad():
-                node_embeddings = self.model(node_features, edge_index_dict, edge_attr_dict)
-        
         # Get all targets
         targets = list(self.kg.entity_to_idx["target"].keys())
         
@@ -277,52 +219,51 @@ class TargetRanker:
         
         return df
     
-    def rank_targets_batch(
+    def rank_targets(
         self,
-        compound_ids: List[str],
+        compound_id: str,
         disease_id: Optional[str] = None,
         node_embeddings: Optional[Dict[str, torch.Tensor]] = None,
         top_k: Optional[int] = None,
         confidence_threshold: Optional[float] = None
-    ) -> Dict[str, pd.DataFrame]:
-        """
-        Rank targets for multiple compounds.
-        
-        Args:
-            compound_ids: List of compound identifiers.
-            disease_id: Disease identifier. If None, disease priority is averaged.
-            node_embeddings: Node embeddings. If None, computed from model.
-            top_k: Number of top targets to return. If None, return all.
-            confidence_threshold: Confidence threshold. If None, use config value.
-            
-        Returns:
-            Dictionary mapping compound IDs to DataFrames with ranked targets.
-        """
-        # Initialize results
-        results = {}
-        
+    ) -> pd.DataFrame:
+        """Rank targets for compound."""
+        # Check if compound exists
+        if compound_id not in self.kg.entity_to_idx["compound"]:
+            raise ValueError(f"Compound not found: {compound_id}")
+    
+        # Use config values if not provided
+        if confidence_threshold is None:
+            confidence_threshold = self.config.confidence_threshold
+    
         # Compute node embeddings if not provided
         if node_embeddings is None:
             # Convert knowledge graph to PyTorch Geometric format
             pyg_data = self.kg.to_torch_geometric()
-            
+        
             # Extract node features and move to device
             node_features = {}
-            for entity_type in self.kg.entity_types:
-                if entity_type in pyg_data:
-                    node_features[entity_type] = pyg_data[entity_type].x.to(self.device)
-            
+            if self.node_features is not None:
+                # Use pre-computed node features if available
+                node_features = {k: v.to(self.device) for k, v in self.node_features.items()}
+            else:
+                # Otherwise extract from PyG data
+                for entity_type in self.kg.entity_types:
+                    if entity_type in pyg_data and hasattr(pyg_data[entity_type], 'x'):
+                        node_features[entity_type] = pyg_data[entity_type].x.to(self.device)
+        
             # Extract edge indices and attributes
             edge_index_dict = {}
             edge_attr_dict = {}
-            
+        
             for edge_type, edge_info in pyg_data.edge_items():
                 edge_index_dict[edge_type] = edge_info.edge_index.to(self.device)
                 edge_attr_dict[edge_type] = edge_info.edge_attr.to(self.device)
-            
+        
             # Compute node embeddings
             with torch.no_grad():
                 node_embeddings = self.model(node_features, edge_index_dict, edge_attr_dict)
+
         
         # Rank targets for each compound
         for compound_id in compound_ids:
@@ -350,58 +291,67 @@ class TargetRanker:
         cv_folds: int = 5,
         grid_step: float = 0.1
     ) -> Dict[str, float]:
-        """
-        Optimize ranking weights using grid search.
+        """Optimize ranking weights using grid search."""
+        # Compute node embeddings using stored node features if available
+        if hasattr(self, 'node_features') and self.node_features is not None:
+            # Use stored node features
+            node_features = {k: v.to(self.device) for k, v in self.node_features.items()}
+        else:
+            # Convert knowledge graph to PyTorch Geometric format
+            pyg_data = self.kg.to_torch_geometric()
         
-        Args:
-            validation_data: List of (compound_id, target_id, label) tuples.
-            disease_id: Disease identifier. If None, disease priority is averaged.
-            cv_folds: Number of cross-validation folds.
-            grid_step: Step size for grid search.
-            
-        Returns:
-            Dictionary of optimized weights.
-        """
-        # Convert knowledge graph to PyTorch Geometric format
-        pyg_data = self.kg.to_torch_geometric()
-        
-        # Extract node features and move to device
-        node_features = {}
-        for entity_type in self.kg.entity_types:
-            if entity_type in pyg_data:
-                node_features[entity_type] = pyg_data[entity_type].x.to(self.device)
-        
+            # Extract node features and move to device
+            node_features = {}
+            for entity_type in self.kg.entity_types:
+                if entity_type in pyg_data and hasattr(pyg_data[entity_type], 'x'):
+                    node_features[entity_type] = pyg_data[entity_type].x.to(self.device)
+    
         # Extract edge indices and attributes
         edge_index_dict = {}
         edge_attr_dict = {}
-        
+    
+        # Convert knowledge graph to PyTorch Geometric format
+        pyg_data = self.kg.to_torch_geometric()
         for edge_type, edge_info in pyg_data.edge_items():
             edge_index_dict[edge_type] = edge_info.edge_index.to(self.device)
             edge_attr_dict[edge_type] = edge_info.edge_attr.to(self.device)
-        
+    
         # Compute node embeddings
         with torch.no_grad():
             node_embeddings = self.model(node_features, edge_index_dict, edge_attr_dict)
-        
+    
         # Precompute scores for each compound-target pair
         precomputed_scores = {}
         for compound_id, target_id, _ in validation_data:
-            if (compound_id, target_id) not in precomputed_scores:
-                # Calculate similarity score
-                similarity = self.predict_score(compound_id, target_id, node_embeddings)
+            if compound_id in self.kg.entity_to_idx.get("compound", {}) and target_id in self.kg.entity_to_idx.get("target", {}):
+                if (compound_id, target_id) not in precomputed_scores:
+                    # Calculate similarity score
+                    try:
+                        similarity = self.predict_score(compound_id, target_id, node_embeddings)
+                    except Exception as e:
+                        print(f"Warning: Could not compute similarity for {compound_id}-{target_id}: {e}")
+                        similarity = 0.0
                 
-                # Calculate disease priority
-                disease_priority = self.calculate_disease_priority(target_id, disease_id)
+                    # Calculate disease priority
+                    try:
+                        disease_priority = self.calculate_disease_priority(target_id, disease_id)
+                    except Exception as e:
+                        print(f"Warning: Could not compute disease priority for {target_id}: {e}")
+                        disease_priority = 0.0
                 
-                # Calculate centrality
-                centrality = self.calculate_centrality(target_id)
+                    # Calculate centrality
+                    try:
+                        centrality = self.calculate_centrality(target_id)
+                    except Exception as e:
+                        print(f"Warning: Could not compute centrality for {target_id}: {e}")
+                        centrality = 0.0
                 
-                # Store scores
-                precomputed_scores[(compound_id, target_id)] = {
-                    "similarity": similarity,
-                    "disease_priority": disease_priority,
-                    "centrality": centrality
-                }
+                    # Store scores
+                    precomputed_scores[(compound_id, target_id)] = {
+                        "similarity": similarity,
+                        "disease_priority": disease_priority,
+                        "centrality": centrality
+                    }
         
         # Define parameter grid
         weight_values = np.arange(0, 1 + grid_step, grid_step)
@@ -598,3 +548,6 @@ class TargetRanker:
             metrics["mean_reciprocal_rank"] = 0.0
         
         return metrics
+
+
+
